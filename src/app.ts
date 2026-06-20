@@ -1,6 +1,6 @@
 import express from "express";
 import cors from "cors";
-import { config } from "./config";
+import { config, assertConfigured } from "./config";
 import routerRoutes from "./routes/routers";
 import voucherRoutes from "./routes/vouchers";
 import userRoutes from "./routes/users";
@@ -25,8 +25,18 @@ app.use(
 
 app.use(express.json());
 
-// Health check
+// Health check — always answers, even before env vars are configured.
 app.get("/health", (_req, res) => res.json({ ok: true, ts: new Date().toISOString() }));
+
+// Guard the DB-backed routes: return a clean 503 until the server is configured.
+app.use(["/routers", "/vouchers", "/users"], (_req, res, next) => {
+  try {
+    assertConfigured();
+    next();
+  } catch (err) {
+    res.status(503).json({ error: err instanceof Error ? err.message : "Not configured" });
+  }
+});
 
 app.use("/routers", routerRoutes);
 app.use("/vouchers", voucherRoutes);
