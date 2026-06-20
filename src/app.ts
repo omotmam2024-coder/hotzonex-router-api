@@ -9,14 +9,26 @@ import userRoutes from "./routes/users";
 // server (src/index.ts) and as a Vercel serverless function (api/index.ts).
 const app = express();
 
+// Any *.vercel.app URL belonging to this project (canonical + per-deployment
+// preview URLs all share the vercel.app suffix). Auth is enforced per-request
+// via the Supabase JWT, so CORS is a convenience layer, not the security
+// boundary — allowing the platform's own subdomains is safe.
+const VERCEL_APP = /^https:\/\/[a-z0-9-]+\.vercel\.app$/;
+
 app.use(
   cors({
     origin: (origin, cb) => {
-      // Allow requests with no origin (curl, Postman) and configured origins
-      if (!origin || config.allowedOrigins.includes("*") || config.allowedOrigins.includes(origin)) {
+      if (
+        !origin || // curl/Postman (no Origin header)
+        config.allowedOrigins.includes("*") ||
+        config.allowedOrigins.includes(origin) ||
+        VERCEL_APP.test(origin)
+      ) {
         cb(null, true);
       } else {
-        cb(new Error("Not allowed by CORS"));
+        // Don't throw (that turns the OPTIONS preflight into a 500); just
+        // omit CORS headers so the browser blocks it cleanly.
+        cb(null, false);
       }
     },
     credentials: true,
