@@ -145,6 +145,93 @@ router.put("/:id", requireAuth, async (req: Request, res: Response) => {
   res.json(safe);
 });
 
+// ── POST /routers/:id/sync ────────────────────────────────────────────────────
+// Connect to the router, detect its hotspot servers + profiles, mark it online,
+// store the hotspot server, and import any new profiles as voucher plans.
+function guessMinutes(name: string): number {
+  const n = name.toLowerCase().replace(/\s+/g, "");
+  const m = n.match(/(\d+)\s*(min|m|hour|hr|h|day|d|week|w|month|mo)/);
+  if (m) {
+    const v = parseInt(m[1], 10);
+    const unit = m[2];
+    if (unit.startsWith("min") || unit === "m") return v;
+    if (unit.startsWith("h")) return v * 60;
+    if (unit.startsWith("d")) return v * 1440;
+    if (unit.startsWith("w")) return v * 10080;
+    if (unit.startsWith("mo")) return v * 43200;
+  }
+  if (n.includes("week")) return 10080;
+  if (n.includes("month")) return 43200;
+  if (n.includes("day")) return 1440;
+  return 60;
+}
+
+router.post("/:id/sync", requireAuth, async (req: Request, res: Response) => {
+  const auth = req as AuthRequest;
+  const id = req.params["id"] as string;
+  const row = await loadRouter(id, auth.orgId);
+  if (!row) {
+    res.status(404).json({ error: "Router not found." });
+    return;
+  }
+
+  const cfg: RouterConfig = {
+    host: row["ip_address"] as string,
+    port: (row["api_port"] as number) ?? 8728,
+    username: row["api_username"] as string,
+    password: decrypt(row["encrypted_password"] as string),
+  };
+
+  try {
+    const result = await testConnection(cfg);
+    const server = (row["hotspot_server"] as string | undefined) || result.servers[0] || null;
+
+    await supabase
+      .from("routers")
+      .update({ status: "online", last_seen_at: new Date().toISOString(), hotspot_server: server })
+      .eq("id", id);
+
+    // Import detected profiles as voucher plans (skip ones we already have by name)
+    let importedPlans = 0;
+    if (result.profiles.length && auth.orgId) {
+      const { data: existing } = await supabase
+        .from("voucher_plans")
+        .select("name")
+        .eq("organization_id", auth.orgId);
+      const have = new Set((existing ?? []).map((p) => String(p.name).toLowerCase()));
+      const toAdd = result.profiles
+        .filter((p) => p && !have.has(p.toLowerCase()))
+        .map((p) => ({
+          organization_id: auth.orgId,
+          name: p,
+          duration_minutes: guessMinutes(p),
+          price: 0,
+          is_active: true,
+        }));
+      if (toAdd.length) {
+        const { error } = await supabase.from("voucher_plans").insert(toAdd);
+        if (!error) importedPlans = toAdd.length;
+      }
+    }
+
+    res.json({
+      online: true,
+      identity: result.identity,
+      routerOS: result.routerOS,
+      servers: result.servers,
+      profiles: result.profiles,
+      hotspot_server: server,
+      importedPlans,
+    });
+  } catch (err) {
+    await supabase.from("routers").update({ status: "offline" }).eq("id", id);
+    res.status(502).json({
+      online: false,
+      error: err instanceof Error ? err.message : "Could not reach the router.",
+    });
+  }
+});
+
 // ── GET /routers/:id/status ───────────────────────────────────────────────────
 router.get("/:id/status", requireAuth, async (req: Request, res: Response) => {
   const auth = req as AuthRequest;

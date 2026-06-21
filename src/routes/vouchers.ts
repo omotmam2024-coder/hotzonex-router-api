@@ -2,7 +2,7 @@ import { Router, Request, Response } from "express";
 import { z } from "zod";
 import crypto from "crypto";
 import { requireAuth, loadRouter, type AuthRequest } from "../middleware/auth";
-import { createHotspotUser, type RouterConfig } from "../lib/mikrotik";
+import { createHotspotUsers, type RouterConfig } from "../lib/mikrotik";
 import { decrypt } from "../lib/crypto";
 import { supabase } from "../lib/supabase";
 
@@ -85,17 +85,17 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
     return;
   }
 
-  // Push each code to MikroTik, then save to DB
-  const results: { code: string; success: boolean; error?: string }[] = [];
-
-  for (const code of codes) {
-    try {
-      await createHotspotUser(cfg, code, code, profile, server);
-      results.push({ code, success: true });
-    } catch (err) {
-      results.push({ code, success: false, error: err instanceof Error ? err.message : String(err) });
-    }
-  }
+  // Push all codes to MikroTik over a single connection, then save to DB.
+  const batchResults = await createHotspotUsers(
+    cfg,
+    codes.map((code) => ({ name: code, password: code, profile })),
+    server,
+  );
+  const results = batchResults.map((r) => ({
+    code: r.name,
+    success: r.success,
+    error: r.error,
+  }));
 
   // Save all successful vouchers to DB
   const successful = results.filter((r) => r.success).map((r) => ({

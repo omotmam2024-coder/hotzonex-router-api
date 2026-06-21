@@ -19,5 +19,10 @@ export function decrypt(ciphertext: string): string {
   const key = Buffer.from(config.encryptionKey, "hex");
   const decipher = crypto.createDecipheriv(ALG, key, Buffer.from(ivHex, "hex"));
   decipher.setAuthTag(Buffer.from(tagHex, "hex"));
-  return decipher.update(Buffer.from(encHex, "hex")).toString("utf8") + decipher.final("utf8");
+  // Concat the buffers BEFORE decoding so multi-byte chars split across the
+  // update/final boundary aren't corrupted.
+  return Buffer.concat([
+    decipher.update(Buffer.from(encHex, "hex")),
+    decipher.final(),
+  ]).toString("utf8");
 }
